@@ -1,7 +1,8 @@
 /**
  * GLOBOGATE Lineup Screener — v4 Dropout Risk Scoring
- * Client-side Logistic Regression: P = 1 / (1 + exp(-logit))
- * Trained on 4,906 resolved pipeline journeys (no recruiter, no school).
+ * Client-side Logistic Regression with API-backed candidate search.
+ * Fetches person data from GLOBOGATE External API via Netlify proxy,
+ * auto-maps fields to model features, and scores dropout risk.
  */
 
 // ═══════════════════════════════════════════════════════════
@@ -39,6 +40,7 @@ const MODELS = {
     categories: ['General Ward', 'ICU', 'ER', 'OR', 'Med-Surg', 'Geriatrics', 'Pediatrics', 'OB-GYN', 'Dialysis', 'Psych', 'Other'],
     hasRegion: true,
     baselineDropout: 0.37,
+    countryFilter: ['Philippines'],
   },
   Uzbekistan: {
     intercept: 0.1856603545859344,
@@ -67,6 +69,7 @@ const MODELS = {
     categories: ['General Ward', 'ICU', 'ER', 'Psych', 'OB-GYN', 'Pediatrics', 'Other'],
     hasRegion: true,
     baselineDropout: 0.59,
+    countryFilter: ['Uzbekistan'],
   },
   Colombia: {
     intercept: -7.435911361237017,
@@ -86,11 +89,12 @@ const MODELS = {
     categories: ['General Ward', 'ICU', 'Other'],
     hasRegion: false,
     baselineDropout: 0.68,
+    countryFilter: ['Colombia'],
   },
 };
 
 // ═══════════════════════════════════════════════════════════
-//  REGION LOOKUP TABLES
+//  REGION LOOKUP + CLASSIFICATION
 // ═══════════════════════════════════════════════════════════
 
 const REGIONS = {
@@ -129,36 +133,122 @@ const REGIONS = {
   Colombia: {},
 };
 
+// PH city → region classification (keyword-based, same as training)
+const PH_REGION_KEYWORDS = {
+  'NCR': ['manila', 'makati', 'quezon city', 'pasig', 'taguig', 'mandaluyong', 'caloocan',
+           'pasay', 'paranaque', 'muntinlupa', 'marikina', 'valenzuela', 'navotas', 'malabon',
+           'san juan', 'pateros', 'las pinas', 'ncr', 'metro manila'],
+  'Central Luzon': ['pampanga', 'bulacan', 'tarlac', 'nueva ecija', 'zambales', 'bataan', 'aurora',
+                     'angeles', 'olongapo', 'san fernando', 'malolos', 'meycauayan', 'clark'],
+  'CALABARZON': ['cavite', 'laguna', 'batangas', 'rizal', 'quezon province', 'calabarzon',
+                  'antipolo', 'bacoor', 'imus', 'dasmarinas', 'lucena', 'lipa', 'calamba', 'san pablo',
+                  'sta rosa', 'binan', 'cabuyao', 'santa rosa'],
+  'Western Visayas': ['iloilo', 'bacolod', 'negros occidental', 'capiz', 'antique', 'aklan', 'guimaras'],
+  'CAR': ['baguio', 'benguet', 'mountain province', 'ifugao', 'kalinga', 'apayao', 'abra', 'cordillera'],
+  'Ilocos': ['pangasinan', 'la union', 'ilocos norte', 'ilocos sur', 'dagupan', 'san carlos', 'vigan', 'laoag'],
+  'Zamboanga': ['zamboanga', 'pagadian', 'dipolog', 'dapitan', 'isabela city'],
+  'Bicol': ['albay', 'camarines', 'sorsogon', 'catanduanes', 'masbate', 'legazpi', 'naga', 'bicol'],
+  'Cagayan Valley': ['cagayan', 'isabela', 'nueva vizcaya', 'quirino', 'batanes', 'tuguegarao', 'santiago'],
+  'Davao': ['davao', 'tagum', 'digos', 'panabo', 'samal'],
+  'Central Visayas': ['cebu', 'bohol', 'siquijor', 'negros oriental', 'dumaguete', 'mandaue', 'lapu-lapu', 'talisay'],
+  'Eastern Visayas': ['leyte', 'samar', 'tacloban', 'ormoc', 'eastern samar', 'northern samar', 'southern leyte', 'biliran'],
+  'Northern Mindanao': ['misamis', 'bukidnon', 'lanao del norte', 'cagayan de oro', 'iligan', 'malaybalay', 'valencia'],
+};
+
+// UZ city → region classification
+const UZ_REGION_KEYWORDS = {
+  'Tashkent': ['tashkent', 'toshkent'],
+  'Fergana': ['fergana', 'fargona', 'ferghana'],
+  'Andijan': ['andijan', 'andijon'],
+  'Namangan': ['namangan'],
+  'Samarkand': ['samarkand', 'samarqand'],
+  'Bukhara': ['bukhara', 'buxoro'],
+  'Kashkadarya': ['kashkadarya', 'qashqadaryo', 'karshi'],
+  'Surkhandarya': ['surkhandarya', 'surxondaryo', 'termez'],
+  'Khorezm': ['khorezm', 'xorazm', 'urgench'],
+  'Navoi': ['navoi', 'navoiy'],
+  'Jizzakh': ['jizzakh', 'jizzax'],
+  'Sirdarya': ['sirdarya', 'syrdarya', 'guliston'],
+  'Karakalpakstan': ['karakalpakstan', 'nukus', 'qoraqalpog'],
+};
+
+function classifyRegionPH(city) {
+  if (!city) return 'Other';
+  const c = city.toLowerCase().trim();
+  for (const [region, keywords] of Object.entries(PH_REGION_KEYWORDS)) {
+    if (keywords.some(kw => c.includes(kw))) return region;
+  }
+  return 'Other';
+}
+
+function classifyRegionUZ(city) {
+  if (!city) return 'Other';
+  const c = city.toLowerCase().trim();
+  for (const [region, keywords] of Object.entries(UZ_REGION_KEYWORDS)) {
+    if (keywords.some(kw => c.includes(kw))) return region;
+  }
+  return 'Other';
+}
+
+function classifyRegion(city, country) {
+  if (country === 'Philippines') return classifyRegionPH(city);
+  if (country === 'Uzbekistan') return classifyRegionUZ(city);
+  return '';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CATEGORY SIMPLIFICATION (same as training)
+// ═══════════════════════════════════════════════════════════
+
+function simplifyCategory(cat) {
+  if (!cat) return 'Other';
+  const c = cat.toLowerCase().trim();
+  if (c.includes('intensive') || c.includes('icu')) return 'ICU';
+  if (c.includes('emergency') || c.includes('er ') || c === 'er') return 'ER';
+  if (c.includes('operating') || c.includes('theater') || c.includes('theatre')) return 'OR';
+  if (c.includes('obstetric') || c.includes('labor') || c.includes('gynaecol') || c.includes('gynecol')) return 'OB-GYN';
+  if (c.includes('pediatric') || c.includes('paediatric') || c.includes('neonatal')) return 'Pediatrics';
+  if (c.includes('psychiatric') || c.includes('mental')) return 'Psych';
+  if (c.includes('dialysis') || c.includes('nephrol')) return 'Dialysis';
+  if (c.includes('surgical') || c.includes('surgery')) return 'Med-Surg';
+  if (c.includes('geriatric')) return 'Geriatrics';
+  if (c.includes('general ward') || c.includes('general nursing') || c.includes('medical ward')) return 'General Ward';
+  if (c.includes('cardiol')) return 'Other';
+  return 'Other';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  HOSPITAL NORMALIZATION
+// ═══════════════════════════════════════════════════════════
+
+function normalizeHospital(val) {
+  if (!val) return '';
+  const v = val.toLowerCase().trim();
+  if (v === 'tertiary') return 'Tertiary';
+  if (v === 'secondary') return 'Secondary';
+  if (v === 'primary') return 'Primary';
+  if (v === 'regional') return 'Regional';
+  if (v === 'republican') return 'Republican';
+  if (v.includes('city') || v.includes('district')) return 'City/District';
+  return val;
+}
+
 // ═══════════════════════════════════════════════════════════
 //  FEATURE LABELS (German, for UI)
 // ═══════════════════════════════════════════════════════════
 
 const FEATURE_LABELS = {
-  age: 'Alter',
-  age_sq: 'Alter (quadr.)',
-  is_male: 'Maennlich',
-  is_married: 'Verheiratet',
-  is_single: 'Ledig',
-  has_icu: 'ICU-Erfahrung',
-  years_exp: 'Berufsjahre',
-  years_exp_sq: 'Berufsjahre (quadr.)',
-  hosp_Tertiary: 'Tertiaerkrankenhaus',
-  hosp_Primary: 'Primaerversorgung',
-  hosp_Secondary: 'Sekundaerversorgung',
-  hosp_Regional: 'Regionalkrankenhaus',
-  hosp_Republican: 'Republikkrankenhaus',
+  age: 'Alter', age_sq: 'Alter (quadr.)', is_male: 'Maennlich',
+  is_married: 'Verheiratet', is_single: 'Ledig', has_icu: 'ICU-Erfahrung',
+  years_exp: 'Berufsjahre', years_exp_sq: 'Berufsjahre (quadr.)',
+  hosp_Tertiary: 'Tertiaerkrankenhaus', hosp_Primary: 'Primaerversorgung',
+  hosp_Regional: 'Regionalkrankenhaus', hosp_Republican: 'Republikkrankenhaus',
   hosp_City_District: 'Stadt-/Bezirkskrankenhaus',
-  'cat_General Ward': 'Allgemeinstation',
-  cat_ICU: 'Intensivstation',
-  cat_Med_Surg: 'Chirurgie',
-  cat_OR: 'OP-Saal',
-  cat_ER: 'Notaufnahme',
-  cat_Geriatrics: 'Geriatrie',
-  cat_Pediatrics: 'Paediatrie',
-  cat_OB_GYN: 'Geburtshilfe/Gynaekologie',
-  cat_Dialysis: 'Dialyse',
-  cat_Psych: 'Psychiatrie',
-  cat_Other: 'Andere Fachrichtung',
+  'cat_General Ward': 'Allgemeinstation', cat_ICU: 'Intensivstation',
+  cat_Med_Surg: 'Chirurgie', cat_OR: 'OP-Saal', cat_ER: 'Notaufnahme',
+  cat_Geriatrics: 'Geriatrie', cat_Pediatrics: 'Paediatrie',
+  cat_OB_GYN: 'Geburtshilfe/Gynaekologie', cat_Dialysis: 'Dialyse',
+  cat_Psych: 'Psychiatrie', cat_Other: 'Andere Fachrichtung',
   region_dropout: 'Regionale Dropout-Rate',
 };
 
@@ -167,16 +257,16 @@ const FEATURE_LABELS = {
 // ═══════════════════════════════════════════════════════════
 
 const TIERS = {
-  LOW:      { label: 'Low',      min: 0,    max: 0.30, css: 'low' },
-  MEDIUM:   { label: 'Medium',   min: 0.30, max: 0.50, css: 'medium' },
-  ELEVATED: { label: 'Elevated', min: 0.50, max: 0.70, css: 'elevated' },
-  HIGH:     { label: 'High',     min: 0.70, max: 1.01, css: 'high' },
+  LOW:      { label: 'Low',      css: 'low' },
+  MEDIUM:   { label: 'Medium',   css: 'medium' },
+  ELEVATED: { label: 'Elevated', css: 'elevated' },
+  HIGH:     { label: 'High',     css: 'high' },
 };
 
-function getTier(probability) {
-  if (probability < 0.30) return 'LOW';
-  if (probability < 0.50) return 'MEDIUM';
-  if (probability < 0.70) return 'ELEVATED';
+function getTier(p) {
+  if (p < 0.30) return 'LOW';
+  if (p < 0.50) return 'MEDIUM';
+  if (p < 0.70) return 'ELEVATED';
   return 'HIGH';
 }
 
@@ -184,62 +274,41 @@ function getTier(probability) {
 //  SCORING ENGINE
 // ═══════════════════════════════════════════════════════════
 
-function sigmoid(x) {
-  return 1 / (1 + Math.exp(-x));
-}
+function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
 
 function scoreCandidate(country, candidate) {
   const model = MODELS[country];
   if (!model) return null;
 
   const age = candidate.age || 30;
-  const ageSq = age * age;
-  const isMale = candidate.gender === 'Male' ? 1 : 0;
-  const isMarried = candidate.maritalStatus === 'Married' ? 1 : 0;
-  const isSingle = candidate.maritalStatus === 'Single' ? 1 : 0;
-  const hasIcu = candidate.icuExperience ? 1 : 0;
-  const yearsExp = candidate.yearsExperience || 0;
-  const yearsExpSq = yearsExp * yearsExp;
-
-  // Hospital dummies
-  const hospital = candidate.hospital || '';
-  const hospFeatures = {};
-  if (hospital === 'Tertiary') hospFeatures.hosp_Tertiary = 1;
-  if (hospital === 'Primary') hospFeatures.hosp_Primary = 1;
-  if (hospital === 'Secondary') hospFeatures.hosp_Secondary = 1;
-  if (hospital === 'Regional') hospFeatures.hosp_Regional = 1;
-  if (hospital === 'Republican') hospFeatures.hosp_Republican = 1;
-  if (hospital === 'City/District') hospFeatures.hosp_City_District = 1;
-
-  // Category dummies
-  const category = candidate.category || '';
-  const catKey = 'cat_' + category.replace(/-/g, '_');
-  const catFeatures = {};
-  catFeatures[catKey] = 1;
-  // Special case for "General Ward" with space
-  if (category === 'General Ward') {
-    delete catFeatures[catKey];
-    catFeatures['cat_General Ward'] = 1;
-  }
-
-  // Region dropout rate
-  const regionRate = model.hasRegion && candidate.region
-    ? (REGIONS[country]?.[candidate.region] ?? REGIONS[country]?.['Other'] ?? 0)
-    : 0;
-
-  // Build feature vector
   const featureValues = {
-    age, age_sq: ageSq, is_male: isMale,
-    is_married: isMarried, is_single: isSingle,
-    has_icu: hasIcu, years_exp: yearsExp, years_exp_sq: yearsExpSq,
-    ...hospFeatures, ...catFeatures,
-    region_dropout: regionRate,
+    age, age_sq: age * age,
+    is_male: candidate.gender === 'Male' ? 1 : 0,
+    is_married: candidate.maritalStatus === 'Married' ? 1 : 0,
+    is_single: candidate.maritalStatus === 'Single' ? 1 : 0,
+    has_icu: candidate.icuExperience ? 1 : 0,
+    years_exp: candidate.yearsExperience || 0,
+    years_exp_sq: (candidate.yearsExperience || 0) ** 2,
+    region_dropout: model.hasRegion && candidate.region
+      ? (REGIONS[country]?.[candidate.region] ?? REGIONS[country]?.['Other'] ?? 0)
+      : 0,
   };
 
-  // Calculate logit
+  // Hospital dummies
+  const h = candidate.hospital || '';
+  if (h === 'Tertiary') featureValues.hosp_Tertiary = 1;
+  if (h === 'Primary') featureValues.hosp_Primary = 1;
+  if (h === 'Regional') featureValues.hosp_Regional = 1;
+  if (h === 'Republican') featureValues.hosp_Republican = 1;
+  if (h === 'City/District') featureValues.hosp_City_District = 1;
+
+  // Category dummies
+  const cat = candidate.category || '';
+  if (cat === 'General Ward') featureValues['cat_General Ward'] = 1;
+  else if (cat) featureValues['cat_' + cat.replace(/-/g, '_')] = 1;
+
   let logit = model.intercept;
   const contributions = {};
-
   for (const [feature, coef] of Object.entries(model.features)) {
     const val = featureValues[feature] || 0;
     const contribution = coef * val;
@@ -250,9 +319,102 @@ function scoreCandidate(country, candidate) {
   }
 
   const probability = sigmoid(logit);
-  const tier = getTier(probability);
+  return { probability, tier: getTier(probability), logit, contributions };
+}
 
-  return { probability, tier, logit, contributions };
+// ═══════════════════════════════════════════════════════════
+//  API DATA + PERSON MAPPING
+// ═══════════════════════════════════════════════════════════
+
+const PROXY_URL = '/.netlify/functions/api-proxy';
+const personsCache = {}; // { country: Person[] }
+let allPersonsRaw = null; // raw API response cached
+
+async function fetchPersons() {
+  if (allPersonsRaw) return allPersonsRaw;
+
+  const statusEl = document.getElementById('loading-status');
+  statusEl.style.display = '';
+  statusEl.textContent = 'Lade Kandidaten aus der API...';
+
+  try {
+    const url = `${PROXY_URL}?endpoint=${encodeURIComponent('/persons?state=all')}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`API Fehler: ${res.status}`);
+    const json = await res.json();
+
+    // API returns { original: { "0": {...}, "1": {...} } } or similar
+    let persons;
+    if (json.original) {
+      persons = Array.isArray(json.original) ? json.original : Object.values(json.original);
+    } else if (Array.isArray(json)) {
+      persons = json;
+    } else {
+      persons = Object.values(json);
+    }
+
+    allPersonsRaw = persons;
+    statusEl.style.display = 'none';
+    return persons;
+  } catch (err) {
+    statusEl.textContent = `Fehler beim Laden: ${err.message}`;
+    statusEl.className = 'loading-status error';
+    throw err;
+  }
+}
+
+async function getPersonsForCountry(country) {
+  if (personsCache[country]) return personsCache[country];
+
+  const raw = await fetchPersons();
+  const countryFilter = MODELS[country].countryFilter;
+
+  const mapped = raw
+    .filter(p => countryFilter.includes(p.country))
+    .map(p => mapPersonFromApi(p, country));
+
+  personsCache[country] = mapped;
+  return mapped;
+}
+
+function mapPersonFromApi(p, country) {
+  // Calculate age
+  let age = null;
+  if (p.person_birth_date) {
+    const birth = new Date(p.person_birth_date);
+    const now = new Date();
+    age = Math.floor((now - birth) / (365.25 * 24 * 60 * 60 * 1000));
+    if (age < 18 || age > 70) age = null;
+  }
+
+  // Classify region from city
+  const region = classifyRegion(p.person_city || p.person_birth_place || '', country);
+
+  // ICU experience
+  const icuRaw = String(p.person_icu_category || '').toLowerCase();
+  const icuExperience = ['1', '1.0', 'true', 'yes'].includes(icuRaw);
+
+  return {
+    personId: p.person_id,
+    referenceId: p.reference_id || '',
+    name: p.person_name || '(Unbekannt)',
+    country: p.country,
+    age,
+    gender: p.person_gender || 'Female',
+    maritalStatus: p.marital_status || '',
+    hospital: normalizeHospital(p.person_hospital || ''),
+    category: simplifyCategory(p.person_categories || ''),
+    rawCategory: p.person_categories || '',
+    icuExperience,
+    yearsExperience: parseFloat(p.total_years_experience_rn) || 0,
+    region,
+    city: p.person_city || '',
+    // Status info for display
+    processStep: p.process_step || '',
+    classId: p.class_id,
+    hasDropped: !!(p.dropout_date_fin || p.dropout_reason),
+    hasArrived: !!p.arrival_fin,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -261,9 +423,12 @@ function scoreCandidate(country, candidate) {
 
 let state = {
   country: 'Philippines',
-  candidates: [],
+  candidates: [],      // scored lineup candidates
   filter: 'ALL',
   nextId: 1,
+  persons: [],         // loaded from API for current country
+  loading: false,
+  searchOpen: false,
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -272,23 +437,59 @@ let state = {
 
 function init() {
   renderCountryTabs();
-  updateFormForCountry();
   renderResults();
   renderSummary();
 
   // Event listeners
-  document.getElementById('add-btn').addEventListener('click', addCandidate);
-  document.getElementById('csv-upload-btn').addEventListener('click', () => {
-    document.getElementById('csv-file-input').click();
-  });
-  document.getElementById('csv-file-input').addEventListener('change', handleCsvUpload);
   document.getElementById('csv-export-btn').addEventListener('click', exportCsv);
   document.getElementById('clear-all-btn').addEventListener('click', clearAll);
 
-  // Enter key in form
-  document.getElementById('input-form').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); addCandidate(); }
+  // Search input
+  const searchInput = document.getElementById('search-input');
+  searchInput.addEventListener('input', onSearchInput);
+  searchInput.addEventListener('focus', () => {
+    if (searchInput.value.length >= 2) onSearchInput();
   });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.search-container')) closeDropdown();
+  });
+  searchInput.addEventListener('keydown', onSearchKeydown);
+
+  // Load data for initial country
+  loadCountryData();
+}
+
+async function loadCountryData() {
+  state.loading = true;
+  updateSearchPlaceholder();
+  try {
+    state.persons = await getPersonsForCountry(state.country);
+    state.loading = false;
+    updateSearchPlaceholder();
+    updatePersonCount();
+  } catch (e) {
+    state.loading = false;
+    updateSearchPlaceholder();
+  }
+}
+
+function updateSearchPlaceholder() {
+  const input = document.getElementById('search-input');
+  if (state.loading) {
+    input.placeholder = 'Lade Kandidaten...';
+    input.disabled = true;
+  } else {
+    input.placeholder = `Name oder Referenz-Nr. eingeben (${state.persons.length} Kandidaten)`;
+    input.disabled = false;
+  }
+}
+
+function updatePersonCount() {
+  const el = document.getElementById('person-count');
+  if (el) {
+    const active = state.persons.filter(p => !p.hasDropped && !p.hasArrived).length;
+    el.textContent = `${state.persons.length} Personen geladen, ${active} aktiv in Pipeline`;
+  }
 }
 
 function renderCountryTabs() {
@@ -299,95 +500,147 @@ function renderCountryTabs() {
     btn.className = 'country-tab' + (country === state.country ? ' active' : '');
     btn.textContent = country;
     btn.addEventListener('click', () => {
+      if (country === state.country) return;
       state.country = country;
       state.candidates = [];
       state.filter = 'ALL';
       state.nextId = 1;
       renderCountryTabs();
-      updateFormForCountry();
       renderResults();
       renderSummary();
+      document.getElementById('search-input').value = '';
+      closeDropdown();
+      loadCountryData();
     });
     container.appendChild(btn);
   }
 }
 
-function updateFormForCountry() {
-  const model = MODELS[state.country];
+// ═══════════════════════════════════════════════════════════
+//  SEARCH / AUTOCOMPLETE
+// ═══════════════════════════════════════════════════════════
 
-  // Hospital select
-  const hospGroup = document.getElementById('hospital-group');
-  const hospSelect = document.getElementById('input-hospital');
-  if (model.hospitals.length === 0) {
-    hospGroup.style.display = 'none';
-    hospSelect.value = '';
-  } else {
-    hospGroup.style.display = '';
-    hospSelect.innerHTML = '<option value="">-- Bitte waehlen --</option>';
-    for (const h of model.hospitals) {
-      const opt = document.createElement('option');
-      opt.value = h;
-      opt.textContent = h;
-      hospSelect.appendChild(opt);
-    }
-  }
+let searchHighlightIdx = -1;
 
-  // Category select
-  const catSelect = document.getElementById('input-category');
-  catSelect.innerHTML = '<option value="">-- Bitte waehlen --</option>';
-  for (const c of model.categories) {
-    const opt = document.createElement('option');
-    opt.value = c;
-    opt.textContent = c;
-    catSelect.appendChild(opt);
-  }
+function onSearchInput() {
+  const query = document.getElementById('search-input').value.trim().toLowerCase();
+  if (query.length < 2) { closeDropdown(); return; }
 
-  // Region select
-  const regionGroup = document.getElementById('region-group');
-  const regionSelect = document.getElementById('input-region');
-  if (model.hasRegion) {
-    regionGroup.style.display = '';
-    regionSelect.innerHTML = '<option value="">-- Bitte waehlen --</option>';
-    const regions = Object.keys(REGIONS[state.country] || {});
-    for (const r of regions) {
-      const opt = document.createElement('option');
-      opt.value = r;
-      opt.textContent = r;
-      regionSelect.appendChild(opt);
-    }
-  } else {
-    regionGroup.style.display = 'none';
-    regionSelect.value = '';
-  }
+  const alreadyAdded = new Set(state.candidates.map(c => c.personId));
 
-  // Reset form
-  document.getElementById('input-name').value = '';
-  document.getElementById('input-age').value = '';
-  document.getElementById('input-gender').value = 'Female';
-  document.getElementById('input-marital').value = '';
-  document.getElementById('input-icu').checked = false;
-  document.getElementById('input-years').value = '';
+  const results = state.persons
+    .filter(p => {
+      if (alreadyAdded.has(p.personId)) return false;
+      const nameMatch = p.name.toLowerCase().includes(query);
+      const refMatch = p.referenceId && p.referenceId.toString().includes(query);
+      return nameMatch || refMatch;
+    })
+    .slice(0, 20);
+
+  renderDropdown(results, query);
 }
 
-function addCandidate() {
-  const name = document.getElementById('input-name').value.trim() || `Kandidat ${state.nextId}`;
-  const age = parseFloat(document.getElementById('input-age').value);
-  const gender = document.getElementById('input-gender').value;
-  const maritalStatus = document.getElementById('input-marital').value;
-  const hospital = document.getElementById('input-hospital').value;
-  const category = document.getElementById('input-category').value;
-  const icuExperience = document.getElementById('input-icu').checked;
-  const yearsExperience = parseFloat(document.getElementById('input-years').value) || 0;
-  const region = document.getElementById('input-region').value;
+function onSearchKeydown(e) {
+  const dropdown = document.getElementById('search-dropdown');
+  const items = dropdown.querySelectorAll('.dropdown-item');
+  if (!items.length) return;
 
-  if (!age || age < 18 || age > 65) {
-    alert('Bitte Alter eingeben (18-65).');
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    searchHighlightIdx = Math.min(searchHighlightIdx + 1, items.length - 1);
+    updateDropdownHighlight(items);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    searchHighlightIdx = Math.max(searchHighlightIdx - 1, 0);
+    updateDropdownHighlight(items);
+  } else if (e.key === 'Enter' && searchHighlightIdx >= 0) {
+    e.preventDefault();
+    items[searchHighlightIdx].click();
+  } else if (e.key === 'Escape') {
+    closeDropdown();
+  }
+}
+
+function updateDropdownHighlight(items) {
+  items.forEach((item, i) => {
+    item.classList.toggle('highlighted', i === searchHighlightIdx);
+  });
+  if (searchHighlightIdx >= 0 && items[searchHighlightIdx]) {
+    items[searchHighlightIdx].scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function renderDropdown(results, query) {
+  const dropdown = document.getElementById('search-dropdown');
+  searchHighlightIdx = -1;
+
+  if (results.length === 0) {
+    dropdown.innerHTML = '<div class="dropdown-empty">Keine Treffer</div>';
+    dropdown.style.display = '';
     return;
   }
 
+  dropdown.innerHTML = '';
+  dropdown.style.display = '';
+
+  for (const p of results) {
+    const item = document.createElement('div');
+    item.className = 'dropdown-item';
+
+    const statusClass = p.hasDropped ? 'dropped' : p.hasArrived ? 'arrived' : 'active';
+    const statusLabel = p.hasDropped ? 'Dropout' : p.hasArrived ? 'Arrived' : (p.processStep || 'Aktiv');
+
+    item.innerHTML = `
+      <div class="dropdown-item-main">
+        <span class="dropdown-name">${highlightMatch(esc(p.name), query)}</span>
+        <span class="dropdown-ref">${p.referenceId ? '#' + esc(p.referenceId) : ''}</span>
+      </div>
+      <div class="dropdown-item-meta">
+        ${p.age ? p.age + 'J' : '?'} &middot;
+        ${p.gender === 'Male' ? 'M' : 'W'} &middot;
+        ${esc(p.category || '-')} &middot;
+        ${esc(p.hospital || '-')} &middot;
+        ${p.yearsExperience ? p.yearsExperience + ' Jahre' : '-'}
+        <span class="dropdown-status ${statusClass}">${esc(statusLabel)}</span>
+      </div>
+    `;
+
+    item.addEventListener('click', () => addPersonToLineup(p));
+    dropdown.appendChild(item);
+  }
+}
+
+function highlightMatch(text, query) {
+  if (!query) return text;
+  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+  return text.replace(regex, '<mark>$1</mark>');
+}
+
+function closeDropdown() {
+  document.getElementById('search-dropdown').style.display = 'none';
+  searchHighlightIdx = -1;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ADD PERSON TO LINEUP
+// ═══════════════════════════════════════════════════════════
+
+function addPersonToLineup(person) {
   const candidate = {
     id: state.nextId++,
-    name, age, gender, maritalStatus, hospital, category, icuExperience, yearsExperience, region,
+    personId: person.personId,
+    referenceId: person.referenceId,
+    name: person.name,
+    age: person.age,
+    gender: person.gender,
+    maritalStatus: person.maritalStatus,
+    hospital: person.hospital,
+    category: person.category,
+    rawCategory: person.rawCategory,
+    icuExperience: person.icuExperience,
+    yearsExperience: person.yearsExperience,
+    region: person.region,
+    city: person.city,
   };
 
   const result = scoreCandidate(state.country, candidate);
@@ -397,14 +650,15 @@ function addCandidate() {
 
   state.candidates.push(candidate);
 
-  // Clear form (keep country-specific selects)
-  document.getElementById('input-name').value = '';
-  document.getElementById('input-age').value = '';
-  document.getElementById('input-icu').checked = false;
-  document.getElementById('input-years').value = '';
+  // Clear search
+  document.getElementById('search-input').value = '';
+  closeDropdown();
 
   renderResults();
   renderSummary();
+
+  // Focus back on search for quick successive adds
+  document.getElementById('search-input').focus();
 }
 
 function removeCandidate(id) {
@@ -433,11 +687,7 @@ function toggleFactors(id) {
 
 function renderSummary() {
   const panel = document.getElementById('summary-panel');
-
-  if (state.candidates.length === 0) {
-    panel.style.display = 'none';
-    return;
-  }
+  if (state.candidates.length === 0) { panel.style.display = 'none'; return; }
 
   panel.style.display = '';
   const n = state.candidates.length;
@@ -489,8 +739,7 @@ function renderFilterBar() {
   const tiers = { ALL: state.candidates.length, LOW: 0, MEDIUM: 0, ELEVATED: 0, HIGH: 0 };
   state.candidates.forEach(c => tiers[c.tier]++);
 
-  const buttons = bar.querySelectorAll('.filter-btn');
-  buttons.forEach(btn => {
+  bar.querySelectorAll('.filter-btn').forEach(btn => {
     const f = btn.dataset.filter;
     btn.className = 'filter-btn' + (f === state.filter ? ' active' : '');
     const countEl = btn.querySelector('.count');
@@ -521,23 +770,20 @@ function renderTable() {
   tableWrap.style.display = '';
   empty.style.display = 'none';
 
-  // Sort by score descending (highest risk first)
   const sorted = [...filtered].sort((a, b) => b.score - a.score);
-
   tbody.innerHTML = '';
+
   for (const c of sorted) {
     const tierCfg = TIERS[c.tier];
-
-    // Main row
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td class="col-name">${esc(c.name)}</td>
-      <td>${c.age}</td>
+      <td class="col-name">${esc(c.name)}${c.referenceId ? ' <span class="col-ref">#' + esc(c.referenceId) + '</span>' : ''}</td>
+      <td>${c.age || '-'}</td>
       <td>${c.gender === 'Male' ? 'M' : 'W'}</td>
-      <td>${esc(c.maritalStatus || '-')}</td>
-      <td>${esc(c.hospital || '-')}</td>
       <td>${esc(c.category || '-')}</td>
+      <td>${esc(c.hospital || '-')}</td>
       <td>${c.yearsExperience || '-'}</td>
+      <td>${esc(c.region || '-')}</td>
       <td class="col-score" style="color: var(--color-${tierCfg.css})">${(c.score * 100).toFixed(1)}%</td>
       <td><span class="tier-badge ${tierCfg.css}">${tierCfg.label}</span></td>
       <td>
@@ -553,7 +799,6 @@ function renderTable() {
     `;
     tbody.appendChild(tr);
 
-    // Factor detail row
     const ftr = document.createElement('tr');
     ftr.className = 'factor-row';
     ftr.id = `factors-${c.id}`;
@@ -591,163 +836,8 @@ function renderFactorChips(contributions) {
 
 function esc(str) {
   const div = document.createElement('div');
-  div.textContent = str;
+  div.textContent = String(str);
   return div.innerHTML;
-}
-
-// ═══════════════════════════════════════════════════════════
-//  CSV IMPORT
-// ═══════════════════════════════════════════════════════════
-
-function handleCsvUpload(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = function(evt) {
-    const text = evt.target.result;
-    parseCsv(text);
-    e.target.value = '';
-  };
-  reader.readAsText(file, 'UTF-8');
-}
-
-function parseCsv(text) {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) {
-    alert('CSV muss mindestens eine Headerzeile und eine Datenzeile enthalten.');
-    return;
-  }
-
-  // Auto-detect delimiter
-  const delimiter = lines[0].includes(';') ? ';' : ',';
-  const headers = lines[0].split(delimiter).map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
-
-  // Flexible header mapping
-  const colMap = {};
-  const mappings = {
-    name: ['name', 'kandidat', 'candidate'],
-    age: ['alter', 'age', 'edad'],
-    gender: ['geschlecht', 'gender', 'sexo', 'sex'],
-    maritalStatus: ['familienstand', 'marital', 'marital_status', 'estado_civil'],
-    hospital: ['krankenhaus', 'krankenhaustyp', 'hospital', 'hospital_type'],
-    category: ['fachrichtung', 'category', 'kategorie', 'especialidad', 'nursing_category'],
-    icu: ['icu', 'icu_erfahrung', 'icu_experience', 'intensivstation'],
-    yearsExperience: ['berufsjahre', 'berufserfahrung', 'years_exp', 'years_experience', 'years', 'experiencia'],
-    region: ['region', 'herkunft', 'origen'],
-  };
-
-  for (const [field, aliases] of Object.entries(mappings)) {
-    const idx = headers.findIndex(h => aliases.some(a => h.includes(a)));
-    if (idx >= 0) colMap[field] = idx;
-  }
-
-  if (colMap.age === undefined) {
-    alert('CSV-Fehler: Spalte "Alter" / "Age" nicht gefunden.');
-    return;
-  }
-
-  let added = 0;
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(delimiter).map(c => c.trim().replace(/^["']|["']$/g, ''));
-    if (cols.length < 2) continue;
-
-    const getValue = (field) => colMap[field] !== undefined ? cols[colMap[field]] : '';
-
-    const age = parseFloat(getValue('age'));
-    if (!age || age < 18 || age > 65) continue;
-
-    const genderRaw = getValue('gender').toLowerCase();
-    const gender = (genderRaw === 'm' || genderRaw === 'male' || genderRaw === 'maennlich' || genderRaw === 'männlich' || genderRaw === 'masculino') ? 'Male' : 'Female';
-
-    const icuRaw = getValue('icu').toLowerCase();
-    const icuExperience = ['ja', 'yes', '1', 'true', 'si', 'x'].includes(icuRaw);
-
-    const candidate = {
-      id: state.nextId++,
-      name: getValue('name') || `CSV-${i}`,
-      age,
-      gender,
-      maritalStatus: normalizeMaritalStatus(getValue('maritalStatus')),
-      hospital: normalizeHospital(getValue('hospital'), state.country),
-      category: normalizeCategory(getValue('category')),
-      icuExperience,
-      yearsExperience: parseFloat(getValue('yearsExperience')) || 0,
-      region: normalizeRegion(getValue('region'), state.country),
-    };
-
-    const result = scoreCandidate(state.country, candidate);
-    candidate.score = result.probability;
-    candidate.tier = result.tier;
-    candidate.contributions = result.contributions;
-
-    state.candidates.push(candidate);
-    added++;
-  }
-
-  if (added > 0) {
-    renderResults();
-    renderSummary();
-    alert(`${added} Kandidaten importiert.`);
-  } else {
-    alert('Keine gultigen Kandidaten in der CSV gefunden.');
-  }
-}
-
-function normalizeMaritalStatus(val) {
-  if (!val) return '';
-  const v = val.toLowerCase().trim();
-  if (['single', 'ledig'].includes(v)) return 'Single';
-  if (['married', 'verheiratet'].includes(v)) return 'Married';
-  if (['divorced', 'geschieden'].includes(v)) return 'Divorced';
-  if (['widowed', 'verwitwet'].includes(v)) return 'Widowed';
-  return val;
-}
-
-function normalizeHospital(val, country) {
-  if (!val) return '';
-  const v = val.toLowerCase().trim();
-  const hospitals = MODELS[country]?.hospitals || [];
-  // Exact match (case-insensitive)
-  for (const h of hospitals) {
-    if (h.toLowerCase() === v) return h;
-  }
-  // Partial match
-  if (v.includes('tertiary') || v.includes('tertiaer')) return 'Tertiary';
-  if (v.includes('primary') || v.includes('primaer')) return 'Primary';
-  if (v.includes('secondary') || v.includes('sekundaer')) return 'Secondary';
-  if (v.includes('regional')) return 'Regional';
-  if (v.includes('republican') || v.includes('republik')) return 'Republican';
-  if (v.includes('city') || v.includes('district') || v.includes('bezirk') || v.includes('stadt')) return 'City/District';
-  return val;
-}
-
-function normalizeCategory(val) {
-  if (!val) return '';
-  const v = val.toLowerCase().trim();
-  if (v.includes('general') || v.includes('allgemein')) return 'General Ward';
-  if (v.includes('icu') || v.includes('intensiv')) return 'ICU';
-  if (v.includes('emergency') || v.includes('notauf') || v.includes('er')) return 'ER';
-  if (v.includes('operating') || v.includes('op-saal') || v.includes('op saal')) return 'OR';
-  if (v.includes('surg') || v.includes('chirurg')) return 'Med-Surg';
-  if (v.includes('geriatr')) return 'Geriatrics';
-  if (v.includes('pediatr') || v.includes('paediatr') || v.includes('kinder')) return 'Pediatrics';
-  if (v.includes('ob-gyn') || v.includes('obstetric') || v.includes('gynaek') || v.includes('geburt')) return 'OB-GYN';
-  if (v.includes('dialys') || v.includes('nephro')) return 'Dialysis';
-  if (v.includes('psych') || v.includes('mental')) return 'Psych';
-  return 'Other';
-}
-
-function normalizeRegion(val, country) {
-  if (!val || !MODELS[country]?.hasRegion) return '';
-  const regions = Object.keys(REGIONS[country] || {});
-  // Exact match
-  const exact = regions.find(r => r.toLowerCase() === val.toLowerCase().trim());
-  if (exact) return exact;
-  // Partial match
-  const partial = regions.find(r => val.toLowerCase().includes(r.toLowerCase()));
-  if (partial) return partial;
-  return 'Other';
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -755,17 +845,13 @@ function normalizeRegion(val, country) {
 // ═══════════════════════════════════════════════════════════
 
 function exportCsv() {
-  if (state.candidates.length === 0) {
-    alert('Keine Kandidaten zum Exportieren.');
-    return;
-  }
+  if (state.candidates.length === 0) { alert('Keine Kandidaten zum Exportieren.'); return; }
 
   const sep = ';';
-  const headers = ['Name', 'Alter', 'Geschlecht', 'Familienstand', 'Krankenhaus', 'Fachrichtung',
-    'ICU', 'Berufsjahre', 'Region', 'Score (%)', 'Tier', 'Empfehlung'];
+  const headers = ['Referenz', 'Name', 'Alter', 'Geschlecht', 'Familienstand', 'Krankenhaus',
+    'Fachrichtung', 'ICU', 'Berufsjahre', 'Region', 'Score (%)', 'Tier', 'Empfehlung'];
 
   const rows = state.candidates.map(c => {
-    const tierCfg = TIERS[c.tier];
     let empfehlung = '';
     if (c.tier === 'HIGH') empfehlung = 'Hohes Risiko - genau pruefen';
     else if (c.tier === 'ELEVATED') empfehlung = 'Erhoehtes Risiko - beobachten';
@@ -773,16 +859,15 @@ function exportCsv() {
     else empfehlung = 'Niedriges Risiko';
 
     return [
-      c.name, c.age, c.gender === 'Male' ? 'M' : 'W', c.maritalStatus || '',
-      c.hospital || '', c.category || '', c.icuExperience ? 'Ja' : 'Nein',
-      c.yearsExperience || '', c.region || '',
-      (c.score * 100).toFixed(1).replace('.', ','), tierCfg.label, empfehlung,
+      c.referenceId || '', c.name, c.age || '', c.gender === 'Male' ? 'M' : 'W',
+      c.maritalStatus || '', c.hospital || '', c.category || '',
+      c.icuExperience ? 'Ja' : 'Nein', c.yearsExperience || '', c.region || '',
+      (c.score * 100).toFixed(1).replace('.', ','), TIERS[c.tier].label, empfehlung,
     ].map(v => `"${v}"`).join(sep);
   });
 
   const bom = '\uFEFF';
   const csv = bom + headers.join(sep) + '\n' + rows.join('\n');
-
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
