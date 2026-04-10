@@ -40,6 +40,8 @@ const MODELS = {
     categories: ['General Ward', 'ICU', 'ER', 'OR', 'Med-Surg', 'Geriatrics', 'Pediatrics', 'OB-GYN', 'Dialysis', 'Psych', 'Other'],
     hasRegion: true,
     baselineDropout: 0.37,
+    // Quartil-Schwellen (P25/P50/P75 ueber alle ~16k PH-Kandidaten)
+    tiers: [0.497, 0.591, 0.703],
     countryFilter: ['Philippines'],
   },
   Uzbekistan: {
@@ -69,6 +71,8 @@ const MODELS = {
     categories: ['General Ward', 'ICU', 'ER', 'Psych', 'OB-GYN', 'Pediatrics', 'Other'],
     hasRegion: true,
     baselineDropout: 0.59,
+    // Quartil-Schwellen (P25/P50/P75 ueber alle ~3.2k UZ-Kandidaten)
+    tiers: [0.492, 0.605, 0.692],
     countryFilter: ['Uzbekistan'],
   },
   Colombia: {
@@ -89,6 +93,8 @@ const MODELS = {
     categories: ['General Ward', 'ICU', 'Other'],
     hasRegion: false,
     baselineDropout: 0.68,
+    // Quartil-Schwellen (P25/P50/P75 ueber alle ~800 CO-Kandidaten)
+    tiers: [0.506, 0.577, 0.650],
     countryFilter: ['Colombia'],
   },
 };
@@ -263,10 +269,11 @@ const TIERS = {
   HIGH:     { label: 'High',     css: 'high' },
 };
 
-function getTier(p) {
-  if (p < 0.30) return 'LOW';
-  if (p < 0.50) return 'MEDIUM';
-  if (p < 0.70) return 'ELEVATED';
+function getTier(p, country) {
+  const t = MODELS[country]?.tiers || [0.50, 0.60, 0.70];
+  if (p < t[0]) return 'LOW';
+  if (p < t[1]) return 'MEDIUM';
+  if (p < t[2]) return 'ELEVATED';
   return 'HIGH';
 }
 
@@ -319,7 +326,7 @@ function scoreCandidate(country, candidate) {
   }
 
   const probability = sigmoid(logit);
-  return { probability, tier: getTier(probability), logit, contributions };
+  return { probability, tier: getTier(probability, country), logit, contributions };
 }
 
 // ═══════════════════════════════════════════════════════════
