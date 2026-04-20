@@ -925,7 +925,7 @@ function csvEscape(v) {
   return s;
 }
 
-function buildTrainingCsv(country, subset, options) {
+function buildTrainingCsv(country, subset) {
   if (!allPersonsRaw) return null;
   const persons = filterPersonsForExport(allPersonsRaw, country, subset);
 
@@ -933,16 +933,12 @@ function buildTrainingCsv(country, subset, options) {
     'person_id', 'reference_id', 'name', 'gender',
     'birth_date', 'age_at_event',
     'marital_status',
-  ];
-  if (options.kidsCount) columns.push('kids_count');
-  columns.push(
     'years_experience',
     'origin_city', 'current_city', 'region',
     'hospital_type', 'category', 'icu_category',
     'arrival_date', 'dropout_date', 'dropout_reason',
     'outcome', 'v4_predicted_prob',
-  );
-  if (options.notes) columns.push('notes');
+  ];
 
   const rows = persons.map(p => {
     // Outcome klassifizieren
@@ -977,7 +973,6 @@ function buildTrainingCsv(country, subset, options) {
       birth_date: (p.person_birth_date || '').slice(0, 10),
       age_at_event: age,
       marital_status: p.marital_status ?? '',
-      kids_count: '',  // leer, manuell zu fuellen
       years_experience: p.total_years_experience_rn ?? '',
       origin_city: originCity,
       current_city: currentCity,
@@ -990,7 +985,6 @@ function buildTrainingCsv(country, subset, options) {
       dropout_reason: p.dropout_reason || '',
       outcome,
       v4_predicted_prob: v4Prob,
-      notes: '',
     };
     return columns.map(c => csvEscape(row[c])).join(';');
   });
@@ -1009,12 +1003,7 @@ async function downloadTrainingCsv() {
   }
 
   const subset = document.getElementById('export-subset').value;
-  const options = {
-    kidsCount: document.getElementById('export-opt-kids').checked,
-    notes:     document.getElementById('export-opt-notes').checked,
-  };
-
-  const result = buildTrainingCsv(state.country, subset, options);
+  const result = buildTrainingCsv(state.country, subset);
   if (!result || result.count === 0) { alert('Keine Kandidaten fuer diesen Filter.'); return; }
 
   const today = new Date().toISOString().slice(0, 10);

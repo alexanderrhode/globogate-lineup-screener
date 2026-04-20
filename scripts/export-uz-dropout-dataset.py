@@ -6,8 +6,6 @@ Zieht alle usbekischen Kandidaten mit bekanntem Outcome aus der GLOBOGATE
 External API (via den Netlify-Proxy), klassifiziert Region und schreibt
 eine CSV, die Oleksandra direkt fuer ihre Analyse nutzen kann.
 
-Nur Kinderzahl (kids_count) bleibt leer — die muss Samanta ergaenzen.
-
 Verwendung:
     cd /Users/alexanderrhode/Documents/globogate-lineup-screener
     python3 scripts/export-uz-dropout-dataset.py
@@ -129,7 +127,6 @@ def main():
         "birth_date",
         "age_at_arrival_or_dropout",
         "marital_status",
-        "kids_count",  # leer — Samanta fuellt nach
         "years_experience",
         "origin_city",
         "current_city",
@@ -181,7 +178,6 @@ def main():
                 p.get("person_birth_date", "") or "",
                 age if age != "" else "",
                 p.get("marital_status", "") or "",
-                "",  # kids_count leer
                 p.get("total_years_experience_rn", "") or "",
                 origin_city,
                 current_city,
