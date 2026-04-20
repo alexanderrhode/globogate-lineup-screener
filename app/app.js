@@ -451,6 +451,11 @@ function init() {
   document.getElementById('csv-export-btn').addEventListener('click', exportCsv);
   document.getElementById('clear-all-btn').addEventListener('click', clearAll);
 
+  // Training-Data-Export
+  document.getElementById('export-btn').addEventListener('click', downloadTrainingCsv);
+  document.getElementById('export-subset').addEventListener('change', updateExportCount);
+  updateExportCount();
+
   // Search input
   const searchInput = document.getElementById('search-input');
   searchInput.addEventListener('input', onSearchInput);
@@ -474,6 +479,7 @@ async function loadCountryData() {
     state.loading = false;
     updateSearchPlaceholder();
     updatePersonCount();
+    updateExportCount();
   } catch (e) {
     state.loading = false;
     updateSearchPlaceholder();
@@ -882,6 +888,158 @@ function exportCsv() {
   a.download = `lineup-screener-${state.country.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TRAINING DATA EXPORT (fuer Modell-Retraining)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Liefert eine gefilterte Liste von rohen API-Personen-Records fuer das aktuelle Land.
+ * Subset-Filter:
+ *   'with_outcome' → arrival_fin ODER dropout_date_fin
+ *   'arrived'      → arrival_fin
+ *   'dropped'      → dropout_date_fin
+ *   'all'          → alle Kandidaten des Landes
+ */
+function filterPersonsForExport(rawPersons, country, subset) {
+  const filtered = rawPersons.filter(p => p.country === country);
+  if (subset === 'arrived')       return filtered.filter(p => p.arrival_fin);
+  if (subset === 'dropped')       return filtered.filter(p => p.dropout_date_fin);
+  if (subset === 'with_outcome')  return filtered.filter(p => p.arrival_fin || p.dropout_date_fin);
+  return filtered;
+}
+
+function yearsBetween(dateStrA, dateStrB) {
+  if (!dateStrA || !dateStrB) return '';
+  const a = new Date(dateStrA);
+  const b = new Date(dateStrB);
+  if (isNaN(a) || isNaN(b)) return '';
+  return ((b - a) / (365.25 * 24 * 60 * 60 * 1000)).toFixed(1);
+}
+
+function csvEscape(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (/[;"\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function buildTrainingCsv(country, subset, options) {
+  if (!allPersonsRaw) return null;
+  const persons = filterPersonsForExport(allPersonsRaw, country, subset);
+
+  const columns = [
+    'person_id', 'reference_id', 'name', 'gender',
+    'birth_date', 'age_at_event',
+    'marital_status',
+  ];
+  if (options.kidsCount) columns.push('kids_count');
+  columns.push(
+    'years_experience',
+    'origin_city', 'current_city', 'region',
+    'hospital_type', 'category', 'icu_category',
+    'arrival_date', 'dropout_date', 'dropout_reason',
+    'outcome', 'v4_predicted_prob',
+  );
+  if (options.notes) columns.push('notes');
+
+  const rows = persons.map(p => {
+    // Outcome klassifizieren
+    let outcome;
+    if (p.arrival_fin && p.dropout_date_fin)      outcome = 'dropped_after_arrival';
+    else if (p.arrival_fin)                       outcome = 'arrived';
+    else if (p.dropout_date_fin)                  outcome = 'dropped_before_arrival';
+    else                                           outcome = 'active';
+
+    // Event-Datum fuer Alter
+    const eventDate = p.arrival_fin || p.dropout_date_fin || new Date().toISOString().slice(0, 10);
+    const age = yearsBetween(p.person_birth_date, eventDate);
+
+    // Region — origin bevorzugen (birth_place), current_city als Fallback
+    const currentCity = p.person_city || '';
+    const birthPlace = p.person_birth_place || '';
+    const regionFromBirth = classifyRegion(birthPlace, country);
+    const regionFromCity = classifyRegion(currentCity, country);
+    const region = regionFromBirth !== 'Other' ? regionFromBirth : regionFromCity;
+    const originCity = birthPlace || currentCity;
+
+    // v4 Score fuer diesen Kandidaten
+    const candidate = mapPersonFromApi(p, country);
+    const scoreResult = scoreCandidate(country, candidate);
+    const v4Prob = scoreResult ? scoreResult.probability.toFixed(4) : '';
+
+    const row = {
+      person_id: p.person_id ?? '',
+      reference_id: p.reference_id ?? '',
+      name: p.person_name ?? '',
+      gender: p.person_gender ?? '',
+      birth_date: (p.person_birth_date || '').slice(0, 10),
+      age_at_event: age,
+      marital_status: p.marital_status ?? '',
+      kids_count: '',  // leer, manuell zu fuellen
+      years_experience: p.total_years_experience_rn ?? '',
+      origin_city: originCity,
+      current_city: currentCity,
+      region,
+      hospital_type: normalizeHospital(p.person_hospital || ''),
+      category: simplifyCategory(p.person_categories || ''),
+      icu_category: p.person_icu_category ?? '',
+      arrival_date: (p.arrival_fin || '').slice(0, 10),
+      dropout_date: (p.dropout_date_fin || '').slice(0, 10),
+      dropout_reason: p.dropout_reason || '',
+      outcome,
+      v4_predicted_prob: v4Prob,
+      notes: '',
+    };
+    return columns.map(c => csvEscape(row[c])).join(';');
+  });
+
+  const bom = '\uFEFF';
+  return {
+    csv: bom + columns.join(';') + '\n' + rows.join('\n'),
+    count: persons.length,
+  };
+}
+
+async function downloadTrainingCsv() {
+  // Sicherstellen, dass die API-Daten geladen sind
+  if (!allPersonsRaw) {
+    try { await fetchPersons(); } catch (e) { alert('API-Daten konnten nicht geladen werden: ' + e.message); return; }
+  }
+
+  const subset = document.getElementById('export-subset').value;
+  const options = {
+    kidsCount: document.getElementById('export-opt-kids').checked,
+    notes:     document.getElementById('export-opt-notes').checked,
+  };
+
+  const result = buildTrainingCsv(state.country, subset, options);
+  if (!result || result.count === 0) { alert('Keine Kandidaten fuer diesen Filter.'); return; }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const subsetSlug = subset === 'with_outcome' ? 'outcomes' : subset;
+  const filename = `${state.country.toLowerCase()}_dropout_dataset_${subsetSlug}_${today}.csv`;
+
+  const blob = new Blob([result.csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function updateExportCount() {
+  const countEl = document.getElementById('export-count');
+  if (!countEl) return;
+
+  if (!allPersonsRaw) {
+    countEl.textContent = 'Daten werden geladen...';
+    return;
+  }
+
+  const subset = document.getElementById('export-subset').value;
+  const persons = filterPersonsForExport(allPersonsRaw, state.country, subset);
+  countEl.textContent = `${persons.length.toLocaleString('de-DE')} Kandidaten (${state.country})`;
 }
 
 // ═══════════════════════════════════════════════════════════

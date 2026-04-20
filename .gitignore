@@ -1,2 +1,5 @@
 # Local Netlify folder
 .netlify
+
+# Exportierte CSVs enthalten echte Kandidaten-Daten (PII) — nie committen!
+exports/
