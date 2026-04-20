@@ -144,39 +144,47 @@
       </div>
     </div>
 
-    <!-- Training Data Export -->
-    <div class="card" id="export-card">
-      <div class="card-title">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Trainingsdaten exportieren (fuer Modell-Retraining)
-      </div>
+    <!-- Erweiterte Optionen: Training-Data-Export -->
+    <details class="advanced-section" id="export-card">
+      <summary class="advanced-summary">
+        <svg class="advanced-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Erweiterte Optionen
+      </summary>
 
-      <p class="export-hint">
-        Historische Kandidaten-Daten als CSV fuer Analyse oder Modell-Update.
-        Enthaelt v4-Features (Alter, Familienstand, Herkunftsregion, Fachrichtung, ...),
-        Outcome-Label (arrived / dropped_*) und den v4-Score als Referenz.
-      </p>
-
-      <div class="export-controls">
-        <div class="export-control-group">
-          <label class="form-label" for="export-subset">Datensatz</label>
-          <select id="export-subset" class="form-select">
-            <option value="with_outcome">Alle mit Outcome (arrived + dropped)</option>
-            <option value="arrived">Nur Eingereiste</option>
-            <option value="dropped">Nur Dropouts</option>
-            <option value="all">Alle Kandidaten (inkl. aktive)</option>
-          </select>
+      <div class="advanced-content card">
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Trainingsdaten exportieren (fuer Modell-Retraining)
         </div>
 
-        <div class="export-actions">
-          <button class="btn btn-primary" id="export-btn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            CSV herunterladen
-          </button>
-          <span id="export-count" class="export-count">&mdash;</span>
+        <p class="export-hint">
+          Historische Kandidaten-Daten als CSV fuer Analyse oder Modell-Update.
+          Enthaelt v4-Features (Alter, Familienstand, Herkunftsregion, Fachrichtung, ...),
+          Outcome-Label (arrived / dropped_*) und den v4-Score als Referenz.
+        </p>
+
+        <div class="export-controls">
+          <div class="export-control-group">
+            <label class="form-label" for="export-subset">Datensatz</label>
+            <select id="export-subset" class="form-select">
+              <option value="with_outcome">Alle mit Outcome (arrived + dropped)</option>
+              <option value="arrived">Nur Eingereiste</option>
+              <option value="dropped">Nur Dropouts</option>
+              <option value="all">Alle Kandidaten (inkl. aktive)</option>
+            </select>
+          </div>
+
+          <div class="export-actions">
+            <button class="btn btn-primary" id="export-btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              CSV herunterladen
+            </button>
+            <span id="export-count" class="export-count">&mdash;</span>
+          </div>
         </div>
       </div>
-    </div>
+    </details>
 
     <div style="text-align:center; padding: 16px 0; font-size: 11px; color: var(--color-text-light);">
       GLOBOGATE Concept AG &mdash; Lineup Screener v4 &mdash; Internes Tool
