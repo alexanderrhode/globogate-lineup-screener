@@ -718,115 +718,6 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Erweiterte Optionen (klappbar) ── */
-
-.advanced-section {
-  margin: 8px 0 20px 0;
-}
-
-.advanced-summary {
-  list-style: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--color-border);
-  background: transparent;
-  user-select: none;
-  transition: all 0.15s;
-}
-
-.advanced-summary::-webkit-details-marker { display: none; }
-.advanced-summary::marker { content: ''; }
-
-.advanced-summary:hover {
-  border-color: var(--color-primary-light);
-  color: var(--color-primary);
-}
-
-.advanced-chevron {
-  transition: transform 0.2s;
-}
-
-.advanced-section[open] .advanced-summary {
-  color: var(--color-primary);
-  border-color: var(--color-primary-light);
-  background: rgba(194, 188, 255, 0.12);
-}
-
-.advanced-section[open] .advanced-chevron {
-  transform: rotate(90deg);
-}
-
-.advanced-content {
-  margin-top: 12px;
-  margin-bottom: 0;
-}
-
-/* ── Training Data Export ── */
-
-.export-hint {
-  font-size: 13px;
-  color: var(--color-text-muted);
-  line-height: 1.5;
-  margin-bottom: 16px;
-}
-
-.export-controls {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px 20px;
-  align-items: start;
-}
-
-.export-control-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.export-checkboxes {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 0;
-}
-
-.export-checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--color-text);
-  cursor: pointer;
-}
-
-.export-checkbox input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--color-accent);
-  cursor: pointer;
-}
-
-.export-actions {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-top: 4px;
-}
-
-.export-count {
-  font-size: 13px;
-  color: var(--color-text-muted);
-  font-weight: 500;
-}
-
 /* ── Hidden file input ── */
 
 .hidden-input {
@@ -866,9 +757,5 @@ body {
 
   .header-subtitle {
     display: none;
-  }
-
-  .export-controls {
-    grid-template-columns: 1fr;
   }
 }
