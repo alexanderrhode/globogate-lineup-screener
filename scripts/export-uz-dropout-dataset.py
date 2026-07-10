@@ -25,7 +25,7 @@ from typing import Optional
 
 PROXY_URL = (
     "https://globogate-lineup-screener.netlify.app/.netlify/functions/"
-    "api-proxy?endpoint=/persons?state=all"
+    "api-proxy?endpoint=/persons"
 )
 
 # UZ-Region-Klassifikation — identisch zu app.js (UZ_REGION_KEYWORDS)

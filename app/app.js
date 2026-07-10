@@ -345,7 +345,7 @@ async function fetchPersons() {
   statusEl.textContent = 'Lade Kandidaten aus der API...';
 
   try {
-    const url = `${PROXY_URL}?endpoint=${encodeURIComponent('/persons?state=all')}`;
+    const url = `${PROXY_URL}?endpoint=${encodeURIComponent('/persons')}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`API Fehler: ${res.status}`);
     const json = await res.json();
